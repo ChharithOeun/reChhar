@@ -1,30 +1,21 @@
 --[[
 ================================================================================
-  reChhar v0.2.0 - Ashita port of React
-  (Sammeh/Byrth's Windower addon, original 2016; ported & simplified)
+  reChhar - gaze detection and reaction for Ashita v4
+  by Chharizard
 
-  Universal mode: no per-job files. When ANY mob begins a gaze ability
-  targeting you, you face away. When it resolves, you face back.
+  When a mob targets you with a gaze/eye attack, reChhar fires:
+    * ALERT: big chat warning telling you which ability from which mob
+    * AUTOTURN (opt-in): sends outgoing position packet to rotate you away
 
-  Design decisions:
-    * Uses Ashita's packet 0x028 (action packet) for detection -- same event
-      source as Windower's 'action' event, just one level lower.
-    * Uses direct heading manipulation via the entity's memory. If your
-      Ashita build exposes SetHeading differently, see the TODO near
-      faceAt() for the override point.
-    * Runaway/runto from original React are OMITTED for v0.2 -- getting
-      character movement right from an addon on era servers is risky
-      flag-wise, and 90% of gaze defense is just facing away.
-    * No per-job behavior.
-
-  Credits: Sammeh (original React, 2016), Byrth, Langly (turnaround math)
+  Universal mode: one addon handles all 22 jobs. Era-aware ability database
+  (base / ToAU / WoTG / retail). Works on Horizon XI, Phoenix XI, and retail.
 ================================================================================
 ]]--
 
 addon.name    = 'reChhar';
-addon.author  = 'ChharithOeun (port) / Sammeh (original React)';
+addon.author  = 'Chharizard';
 addon.version = '0.3.2';
-addon.desc    = 'Universal auto-face-away during gaze attacks (Ashita port of React)';
+addon.desc    = 'Gaze detection and reaction (alert + optional auto-turn)';
 
 require('common');
 local gazes    = require('data.gazes');

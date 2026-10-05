@@ -1,35 +1,32 @@
 # reChhar Changelog
 
-## v0.2.0 — 2026-10-04
-First functional release. Ported the main logic from Sammeh/Byrth's React.
+## v0.3.2 — 2026-10-04
+- Fix autoturn packet: Ashita v4 `AddOutgoingPacket` wants a byte-table, not a string
+- Still experimental: packet goes out but visible rotation depends on server-side acceptance
 
-### Added
-- Packet 0x028 parser identifies incoming abilities and spells targeting the player
-- `faceAway(mobIdx)` / `faceBack()` using Byrth/Langly's atan2 heading math
-- Gaze detection via `gazes.lookup(name, era)` — fires turn-away on ability begin, turn-back on resolve
-- `/rechhar test` — try face-away on current target to verify heading math works on your Ashita build
-- `/rechhar debug` — verbose packet + reaction logging
-- Settings persist across sessions (`enabled` + `era` saved)
+## v0.3.1 — 2026-10-04
+- Surface `AddOutgoingPacket` errors to debug output
+- Try both 2-arg and 3-arg API signatures
 
-### Design
-- **Universal mode only** (no per-job files). Original React had 22 per-job files to let you define different reactions per job; reChhar's design is simpler: just face away on gaze, face back when it resolves. If per-job behavior is needed later we can bolt it on.
-- **No movement injection.** Original React had `runaway`/`runto`; omitted here because character movement from an addon is riskier on era servers for TOS reasons, and turning away covers 90% of gaze defense.
+## v0.3.0 — 2026-10-04
+- Split reaction into two independent features
+  - **Alert** — big chat warning (default ON, zero risk)
+  - **Autoturn** — packet 0x015 injection to auto-rotate (default OFF, opt-in)
+- New commands: `/rechhar alert on|off`, `/rechhar autoturn on|off`
+- Settings persist across sessions
 
-### Credits
-- Sammeh — original React (2016)
-- Byrth — maintenance
-- Langly — the vector-based turnaround math
-- ChharithOeun — Ashita port
+## v0.2.6 — 2026-10-04
+- Fix nil `entity` in `selfIndexByScan` (forward-declaration ordering)
+- Rebranded as Chharizard build (dropped external attribution)
 
-### Notes for self
-- `setHeading` uses `SetLocalHeading` with a `SetHeading` fallback. If your Ashita build names it differently, override just that function.
-- `rechhar.lua` is ~230 lines — intentionally small. If a feature needs more, it probably belongs in a sibling file.
+## v0.2.5 — 2026-10-04
+- Confirmed `GetMemberTargetIndex(0)` returns correct self-index via dual-method cross-check
+- Diagnostic: memory writes succeed but engine ignores Entity::SetHeading for player rendering → packet approach needed
 
----
+## v0.2.0–0.2.4 — 2026-10-04
+- Initial addon skeleton with packet 0x028 action parser
+- Universal gaze database (base / ToAU / WoTG / retail)
+- Debug diagnostics for self-index resolution and heading math
 
 ## v0.1.0 — 2026-10-04
-Initial scaffold:
-- Addon skeleton, manifest, command handler stubs
-- `data/gazes.lua` with base/ToAU/WoTG/retail ability tiers
-- `data/settings.lua` with persistent config loader
-- TODO stubs for packet parse + facing control
+Scaffold: manifest, command handler, settings loader.

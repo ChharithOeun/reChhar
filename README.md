@@ -3,79 +3,74 @@
 ```
      🔥🔥🔥   r e C h h a r   🔥🔥🔥
      ─────────────────────────────────────────
-     Ashita port of React: auto-face-away during
-     gaze attacks, auto-face-back when resolved.
+     Gaze detection and reaction for Ashita v4
      ─────────────────────────────────────────
-     Era-cap aware  •  Horizon  •  Phoenix  •  retail
+     Horizon XI  •  Phoenix XI  •  retail
 ```
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-cyan.svg?style=for-the-badge)](LICENSE)
 [![Framework: Ashita v4](https://img.shields.io/badge/Ashita-v4-ff6b35?style=for-the-badge)]()
-[![Status: Scaffold](https://img.shields.io/badge/status-scaffold-ffd700?style=for-the-badge)]()
-[![Based on: React](https://img.shields.io/badge/based%20on-React%20by%20Byrth-00ffff?style=for-the-badge)]()
+[![Status: Live](https://img.shields.io/badge/status-live-00ff00?style=for-the-badge)]()
+[![by: Chharizard](https://img.shields.io/badge/by-Chharizard-ff5f87?style=for-the-badge)]()
 
-**Ashita port of the Windower [React](https://github.com/Windower/Lua) addon by Byrth. Automatically faces your character away when a mob begins a gaze attack, then faces back when the action resolves.**
+**When a mob begins a gaze/eye/petrify attack targeting your character, reChhar fires an alarm — and optionally auto-rotates you away.**
 
-Protects against:
-- Petrification gazes (Medusa, catoblepas, basilisks)
-- Death gazes (chimeras, taurus, ahriman eyes)
-- Charm gazes (succubus, bombs)
-- Hundred Fists / Mijin Gakure prep windows (configurable)
-- Any ability you add to the database
+Two features, independently toggleable:
 
-Era-aware: ships with ToAU-cap ability sets by default; retail players can enable later-expansion gaze abilities via `/rechhar era retail`.
+- **Alert** (default ON) — big chat warning: `*** GAZE INCOMING: Petrifying Eye from Basilisk - TURN AWAY ***`. Fires on the ability's begin event, 2–3 seconds before it resolves. More than enough time to tap a direction key manually.
+- **Autoturn** (default OFF) — sends an outgoing position packet (0x015) to rotate your character away automatically. Experimental; works on some servers, blocked on others.
+
+Era-aware: tracks the right ability sets for base game / ToAU / WoTG / retail. Universal mode: one addon handles every job.
 
 ---
 
-## Status
+## Install
 
-**🚧 Scaffold — core logic porting in progress 🚧**
-
-What's here now:
-- Addon skeleton (`rechhar.lua`, `manifest.xml`)
-- Ability database stub (`data/gazes.lua`)
-- Config loader (`data/settings.lua`)
-- Commands wired (`/rechhar on|off|era|debug`)
-- Chat-event hook stubs
-
-What's not here yet (coming when the base React source is linked):
-- The actual "turn away" mechanic (hooking the facing packet)
-- Per-ability face-away timing (some abilities telegraph for 2s, others for 5s)
-- Range check (only react when within the mob's gaze range)
-- Face-back-after-resolve logic
-
-The gaze database is already structured for all jobs since any job can be a gaze target — reChhar doesn't need per-job profiles like ChharLAC does.
-
----
-
-## Install (when ready)
-
-1. Clone this repo
-2. Copy `addons/rechhar/` into `<Ashita>\addons\`
+1. Clone this repo (or `git pull` if you already have it)
+2. Copy or junction `addons/rechhar/` into `<Ashita>\addons\`
 3. In-game: `/addon load rechhar`
-4. `/rechhar on` to enable auto-reaction
+4. Configure once; settings persist across sessions
 
 ---
 
-## Commands (planned)
+## Commands
 
 ```
-/rechhar on | off           -- master toggle
-/rechhar era <toau|wotg|retail>
-                           -- which gaze set to use
-/rechhar add "<ability>"    -- add a custom ability to the react list
-/rechhar remove "<ability>"
-/rechhar list               -- show currently tracked abilities
-/rechhar debug              -- print state + last incoming action
+/rechhar on | off               -- master toggle
+/rechhar alert on | off         -- chat warning (default ON, always safe)
+/rechhar autoturn on | off      -- packet-based auto-rotate (opt-in, experimental)
+/rechhar era <base|toau|wotg|retail>
+                               -- which gaze set to use
+/rechhar list                  -- show tracked gazes for current era
+/rechhar test                  -- fire a mock gaze on current target
+/rechhar debug                 -- toggle verbose logging
+/rechhar faceback              -- restore heading after a manual test
 ```
 
 ---
 
-## Credits
+## Recommended live config
 
-- Base concept: [React](https://github.com/Windower/Lua) by **Byrth** (Windower addon)
-- Ashita port: ChharithOeun
-- Framework: Ashita v4 (ThornyFFXI)
+```
+/rechhar on
+/rechhar alert on         <- always safe, zero risk
+/rechhar autoturn off     <- opt-in once you've confirmed it works on your server
+```
+
+Alert alone covers the actual gameplay need. Autoturn is a bonus — if the packet injection isn't accepted by your server you can leave it off and still get full value from the alerts.
+
+---
+
+## Era support
+
+| Era | Example gazes tracked |
+|---|---|
+| base | Stone Gaze, Mortal Ray, Hex Eye, Blaster, Chaotic Eye, Charming Gaze, Petro Eyes |
+| toau | +Breath Gaze, Weakening Gaze, Soporific |
+| wotg | +Despotic Gaze, Shadow Spread |
+| retail | +Daydream, Dreamflower, etc. |
+
+Add server-specific abilities by editing `data/gazes.lua` and committing — pure data, no code changes needed.
 
 ---
 
@@ -89,4 +84,4 @@ The gaze database is already structured for all jobs since any job can be a gaze
 
 ## License
 
-MIT, matching the base React addon's spirit. See [LICENSE](LICENSE).
+MIT. See [LICENSE](LICENSE).
