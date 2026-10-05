@@ -1,0 +1,16 @@
+<?xml version="1.0" encoding="utf-8"?>
+<ashita>
+    <addon>
+        <name>reChhar</name>
+        <author>ChharithOeun</author>
+        <description>Ashita port of React: auto-face-away during gaze attacks</description>
+        <version>0.1.0-scaffold</version>
+        <url>https://github.com/ChharithOeun/reChhar</url>
+        <commands>
+            <command>
+                <name>/rechhar</name>
+                <description>Toggle, configure, and inspect reChhar</description>
+            </command>
+        </commands>
+    </addon>
+</ashita>
