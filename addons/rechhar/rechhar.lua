@@ -14,7 +14,7 @@
 
 addon.name    = 'reChhar';
 addon.author  = 'Chharizard';
-addon.version = '0.3.2';
+addon.version = '0.4.0';
 addon.desc    = 'Gaze detection and reaction (alert + optional auto-turn)';
 
 require('common');
@@ -28,7 +28,13 @@ local M = {
     enabled      = false,
     era          = 'toau',
     alert        = true,       -- chat warning on gaze detect (safe, default ON)
-    autoturn     = false,      -- packet-based auto-rotate (opt-in, less proven)
+    autoturn     = false,      -- packet-based auto-rotate (opt-in, experimental)
+    hud          = false,      -- floating-card HUD for ALL mob abilities (opt-in)
+    hudPosX      = 400,
+    hudPosY      = 80,
+    hudCards     = {},         -- active telegraph cards: [actor_id] = {ability, mob, startedAt, duration}
+    telegraphDefault = 3.0,    -- fallback telegraph duration if unknown
+    cardMaxAge   = 10.0,       -- hard-remove cards after this many seconds
     savedHeading = nil,
     savedTarget  = nil,
     debug        = false,
@@ -37,8 +43,11 @@ local M = {
 local cfg = settings.load();
 M.enabled  = cfg.enabled  == true;
 M.era      = cfg.era      or 'toau';
-M.alert    = (cfg.alert    ~= false);   -- default true unless explicitly disabled
-M.autoturn = cfg.autoturn == true;      -- default false unless explicitly enabled
+M.alert    = (cfg.alert    ~= false);
+M.autoturn = cfg.autoturn == true;
+M.hud      = cfg.hud      == true;
+M.hudPosX  = cfg.hudPosX  or 400;
+M.hudPosY  = cfg.hudPosY  or 80;
 
 -- ---------------------------------------------------------------------------
 -- Load / Unload
@@ -275,29 +284,91 @@ ashita.events.register('packet_in', 'rechhar_028', function(e)
     if (not abilityName) then return; end
 
     local gaze = gazes.lookup(abilityName, M.era);
-    if (not gaze) then
-        if (M.debug) then echo('(not a tracked gaze) '..abilityName); end
-        return;
-    end
-
-    if (M.debug) then
-        echo(('%s uses %s (cat %d) -> %s')
-             :format('mob', abilityName, category, gaze.type));
-    end
-
-    -- Category 7 or 8 = beginning the action  (face away)
-    -- Category 4 or 11 = finished the action  (face back)
-    -- Resolve mob name for alert text
     local ent = entity();
     local mobName = ent:GetName(actorIdx) or 'mob';
 
+    -- HUD: track ALL mob abilities, not just gazes. Keyed by actor_id so a
+    -- single mob chaining abilities just updates its card.
+    if (M.hud) then
+        if (category == 7 or category == 8) then
+            M.hudCards[actorId] = {
+                ability   = abilityName,
+                mob       = mobName,
+                startedAt = os.clock(),
+                duration  = (gaze and gaze.delay) or M.telegraphDefault,
+                isGaze    = gaze ~= nil,
+            };
+        elseif (category == 4 or category == 11) then
+            M.hudCards[actorId] = nil;
+        end
+    end
+
+    if (not gaze) then
+        if (M.debug) then echo('(not tracked) '..abilityName); end
+        return;
+    end
+    if (M.debug) then
+        echo(('%s / %s (cat %d, %s)'):format(mobName, abilityName, category, gaze.type));
+    end
+
     if (category == 7 or category == 8) then
         faceAway(actorIdx, abilityName, mobName, gaze.type);
-        if (M.debug) then echo(('react begin: %s / %s'):format(mobName, abilityName)); end
     elseif (category == 4 or category == 11) then
         faceBack();
-        if (M.debug) then echo(('react end: %s / %s'):format(mobName, abilityName)); end
     end
+end);
+
+-- ---------------------------------------------------------------------------
+-- HUD: floating-card telegraph display  (imgui, drawn on d3d_present)
+-- ---------------------------------------------------------------------------
+ashita.events.register('d3d_present', 'rechhar_hud', function()
+    if (not M.hud) then return; end
+    if (not M.enabled) then return; end
+
+    -- Garbage-collect stale cards first
+    local now = os.clock();
+    for id, c in pairs(M.hudCards) do
+        if (now - c.startedAt > M.cardMaxAge) then
+            M.hudCards[id] = nil;
+        end
+    end
+
+    -- Count how many we're drawing so we can size the window
+    local count = 0;
+    for _ in pairs(M.hudCards) do count = count + 1; end
+    if (count == 0) then return; end
+
+    imgui.SetNextWindowPos({ M.hudPosX, M.hudPosY }, ImGuiCond_Always);
+    imgui.SetNextWindowSize({ 320, 32 * count + 16 }, ImGuiCond_Always);
+    imgui.SetNextWindowBgAlpha(0.65);
+    local flags = bit.bor(
+        ImGuiWindowFlags_NoTitleBar,
+        ImGuiWindowFlags_NoResize,
+        ImGuiWindowFlags_NoMove,
+        ImGuiWindowFlags_NoScrollbar,
+        ImGuiWindowFlags_NoCollapse,
+        ImGuiWindowFlags_NoNav,
+        ImGuiWindowFlags_NoFocusOnAppearing
+    );
+    if (imgui.Begin('reChhar HUD', nil, flags)) then
+        for id, c in pairs(M.hudCards) do
+            local elapsed = now - c.startedAt;
+            local progress = math.max(0, math.min(1, 1 - (elapsed / c.duration)));
+            local label = string.format('%s: %s  (%.1fs)', c.mob, c.ability, c.duration - elapsed);
+            -- Color: red for known gazes, yellow/white for other abilities
+            if (c.isGaze) then
+                imgui.PushStyleColor(ImGuiCol_Text, { 1.0, 0.3, 0.3, 1.0 });
+                imgui.PushStyleColor(ImGuiCol_PlotHistogram, { 1.0, 0.2, 0.2, 1.0 });
+            else
+                imgui.PushStyleColor(ImGuiCol_Text, { 1.0, 1.0, 0.6, 1.0 });
+                imgui.PushStyleColor(ImGuiCol_PlotHistogram, { 1.0, 0.9, 0.3, 1.0 });
+            end
+            imgui.Text(label);
+            imgui.ProgressBar(progress, { 300, 6 }, '');
+            imgui.PopStyleColor(2);
+        end
+    end
+    imgui.End();
 end);
 
 -- ---------------------------------------------------------------------------
@@ -327,8 +398,36 @@ ashita.events.register('command', 'rechhar_command', function(e)
         if (val == 'on' or val == 'off') then
             M.autoturn = (val == 'on'); cfg.autoturn = M.autoturn; settings.save(cfg);
         end
-        echo('autoturn = '..(M.autoturn and 'ON' or 'OFF')
-             ..(M.autoturn and '  (uses packet 0x015, test on Horizon first)' or ''));
+        echo('autoturn = '..(M.autoturn and 'ON' or 'OFF'));
+    elseif (cmd == 'hud') then
+        if (val == 'on' or val == 'off') then
+            M.hud = (val == 'on'); cfg.hud = M.hud; settings.save(cfg);
+        end
+        echo('hud = '..(M.hud and 'ON' or 'OFF'));
+    elseif (cmd == 'hudpos') then
+        -- /rechhar hudpos <x> <y>
+        local x = tonumber(args[3]);
+        local y = tonumber(args[4]);
+        if (x and y) then
+            M.hudPosX = x; M.hudPosY = y;
+            cfg.hudPosX = x; cfg.hudPosY = y; settings.save(cfg);
+            echo(('hud position set to %d,%d'):format(x, y));
+        else
+            echo(('hud position: %d,%d  (usage: /rechhar hudpos <x> <y>)')
+                 :format(M.hudPosX, M.hudPosY));
+        end
+    elseif (cmd == 'hudtest') then
+        -- Inject a fake card to see the HUD without needing a real mob
+        if (not M.hud) then M.hud = true; echo('HUD force-enabled for test'); end
+        local t = AshitaCore:GetMemoryManager():GetTarget();
+        local tidx = t:GetTargetIndex(0);
+        local actorId = (tidx and tidx ~= 0) and entity():GetServerId(tidx) or 999999;
+        local mobName = (tidx and tidx ~= 0) and entity():GetName(tidx) or 'TestMob';
+        M.hudCards[actorId] = {
+            ability = 'Petrifying Eye', mob = mobName,
+            startedAt = os.clock(), duration = 3.0, isGaze = true,
+        };
+        echo('injected test card for 3 sec');
     elseif (cmd == 'era') then
         if (val == 'toau' or val == 'wotg' or val == 'retail' or val == 'base') then
             M.era = val; cfg.era = val; settings.save(cfg);
@@ -364,8 +463,11 @@ ashita.events.register('command', 'rechhar_command', function(e)
         print('  /rechhar on | off');
         print('  /rechhar era <base|toau|wotg|retail>');
         print('  /rechhar list     -- show tracked gazes');
-        print('  /rechhar alert on|off     -- chat warning on gaze detect (safe)');
-        print('  /rechhar autoturn on|off  -- packet 0x015 auto-rotate (opt-in)');
+        print('  /rechhar alert on|off     -- chat warning on gaze detect');
+        print('  /rechhar autoturn on|off  -- packet 0x015 auto-rotate (experimental)');
+        print('  /rechhar hud on|off       -- floating-card telegraph HUD');
+        print('  /rechhar hudpos <x> <y>   -- move the HUD');
+        print('  /rechhar hudtest          -- inject a mock card');
         print('  /rechhar test             -- fire a mock gaze on current target');
         print('  /rechhar debug            -- toggle verbose logging');
     end
