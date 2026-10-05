@@ -23,7 +23,7 @@
 
 addon.name    = 'reChhar';
 addon.author  = 'ChharithOeun (port) / Sammeh (original React)';
-addon.version = '0.2.0';
+addon.version = '0.2.2';
 addon.desc    = 'Universal auto-face-away during gaze attacks (Ashita port of React)';
 
 require('common');
@@ -251,23 +251,26 @@ ashita.events.register('command', 'rechhar_command', function(e)
         M.debug = not M.debug;
         echo('debug = '..tostring(M.debug));
     elseif (cmd == 'test') then
-        -- Test the heading math on your current target
-        local p = AshitaCore:GetMemoryManager():GetPlayer();
+        -- Test the heading math on your current target.
+        -- Timer-free: /rechhar test faces you away, /rechhar faceback restores.
         local t = AshitaCore:GetMemoryManager():GetTarget();
         local tidx = t:GetTargetIndex(0);
         if (tidx and tidx ~= 0) then
-            echo('testing faceAway on current target...');
+            echo('facing away from current target. Run /rechhar faceback to restore.');
             faceAway(tidx);
-            ashita.timer.once(3.0, function() faceBack(); echo('faced back'); end);
         else
             echo('no target to test on');
         end
+    elseif (cmd == 'faceback') then
+        faceBack();
+        echo('faced back');
     else
         echo('commands:');
         print('  /rechhar on | off');
         print('  /rechhar era <base|toau|wotg|retail>');
         print('  /rechhar list     -- show tracked gazes');
-        print('  /rechhar test     -- try face-away on current target');
+        print('  /rechhar test     -- face away from current target (manual)');
+        print('  /rechhar faceback -- restore heading after test');
         print('  /rechhar debug    -- toggle verbose logging');
     end
 end);
