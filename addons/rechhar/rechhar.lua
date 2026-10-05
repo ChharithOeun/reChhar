@@ -1,27 +1,30 @@
 --[[
 ================================================================================
-  reChhar - Ashita port of React (Byrth's Windower addon)
-  v0.1.0-scaffold
+  reChhar v0.2.0 - Ashita port of React
+  (Sammeh/Byrth's Windower addon, original 2016; ported & simplified)
 
-  WHAT THIS IS: an addon that auto-faces your character AWAY when a mob begins
-  a gaze/eye attack, then faces back when the action resolves.
+  Universal mode: no per-job files. When ANY mob begins a gaze ability
+  targeting you, you face away. When it resolves, you face back.
 
-  WHAT THIS IS NOT (yet): working code. This file is the scaffold -- commands
-  are wired, events are hooked, config loads correctly, but the actual
-  "turn away" packet injection is marked TODO until the base React source
-  is studied for reference.
+  Design decisions:
+    * Uses Ashita's packet 0x028 (action packet) for detection -- same event
+      source as Windower's 'action' event, just one level lower.
+    * Uses direct heading manipulation via the entity's memory. If your
+      Ashita build exposes SetHeading differently, see the TODO near
+      faceAt() for the override point.
+    * Runaway/runto from original React are OMITTED for v0.2 -- getting
+      character movement right from an addon on era servers is risky
+      flag-wise, and 90% of gaze defense is just facing away.
+    * No per-job behavior.
 
-  COPYING:
-    * Base concept, structure, ability database: React by Byrth (Windower)
-    * Ashita port: ChharithOeun
-    * MIT license
+  Credits: Sammeh (original React, 2016), Byrth, Langly (turnaround math)
 ================================================================================
 ]]--
 
 addon.name    = 'reChhar';
-addon.author  = 'ChharithOeun';
-addon.version = '0.1.0-scaffold';
-addon.desc    = 'Ashita port of React: auto-face-away during gaze attacks';
+addon.author  = 'ChharithOeun (port) / Sammeh (original React)';
+addon.version = '0.2.0';
+addon.desc    = 'Universal auto-face-away during gaze attacks (Ashita port of React)';
 
 require('common');
 local gazes    = require('data.gazes');
@@ -31,26 +34,197 @@ local settings = require('data.settings');
 -- Runtime state
 -- ---------------------------------------------------------------------------
 local M = {
-    enabled      = false,     -- master toggle; defaults off
-    era          = 'toau',    -- toau | wotg | retail
-    activeGazes  = {},        -- table of mob IDs currently casting a gaze on us
-    savedHeading = nil,       -- heading before we turned away, so we can restore
-    config       = settings.load(),
+    enabled      = false,
+    era          = 'toau',
+    savedHeading = nil,       -- restore to this after action resolves
+    savedTarget  = nil,       -- the mob whose gaze we're reacting to
+    debug        = false,
 };
+
+-- Hydrate from saved settings
+local cfg = settings.load();
+M.enabled = cfg.enabled or false;
+M.era     = cfg.era     or 'toau';
 
 -- ---------------------------------------------------------------------------
 -- Load / Unload
 -- ---------------------------------------------------------------------------
 ashita.events.register('load', 'rechhar_load', function()
-    print(('[reChhar] v%s loaded. /rechhar on to enable.'):format(addon.version));
+    print(('[reChhar] v%s loaded. State: %s | Era: %s | /rechhar help for commands.')
+          :format(addon.version, M.enabled and 'ON' or 'OFF', M.era));
 end);
 
 ashita.events.register('unload', 'rechhar_unload', function()
-    settings.save(M.config);
+    cfg.enabled = M.enabled;
+    cfg.era     = M.era;
+    settings.save(cfg);
 end);
 
 -- ---------------------------------------------------------------------------
--- Command handler
+-- Helpers
+-- ---------------------------------------------------------------------------
+local function selfIndex()
+    return AshitaCore:GetMemoryManager():GetParty():GetMemberTargetIndex(0);
+end
+
+local function selfServerId()
+    return AshitaCore:GetMemoryManager():GetParty():GetMemberServerId(0);
+end
+
+local function entity() return AshitaCore:GetMemoryManager():GetEntity(); end
+
+-- Find a mob's entity index by server id. Walk the entity table since Ashita
+-- doesn't give us a direct id -> index lookup.
+local function indexFromServerId(serverId)
+    local ent = entity();
+    for i = 0, 0x8FF do
+        if (ent:GetServerId(i) == serverId) then return i; end
+    end
+    return nil;
+end
+
+local function echo(msg)
+    print('[reChhar] '..msg);
+end
+
+-- ---------------------------------------------------------------------------
+-- Heading control
+-- ---------------------------------------------------------------------------
+-- Compute the heading radian that points you AWAY from (or TOWARD) a mob
+-- entity, given the current self position.
+--
+-- Math is identical to Byrth's React:  atan2(dy, dx) * 180/pi * -1  (deg)
+-- then add 180 if we want the opposite direction, convert to radians.
+local function computeHeading(mobIdx, selfIdx, facingAway)
+    local ent = entity();
+    local mx, my = ent:GetLocalPositionX(mobIdx), ent:GetLocalPositionY(mobIdx);
+    local sx, sy = ent:GetLocalPositionX(selfIdx), ent:GetLocalPositionY(selfIdx);
+    if (not mx or not sx) then return nil; end
+    local degrees = (math.atan2((my - sy), (mx - sx)) * 180 / math.pi) * -1;
+    if (facingAway) then degrees = degrees + 180; end
+    return degrees * math.pi / 180;
+end
+
+-- Apply a heading. Ashita's Entity interface exposes GetLocalHeading(idx) for
+-- reads; writes go through the same object's SetLocalHeading(idx, radians).
+-- If your Ashita build names this differently, change ONLY this function.
+local function setHeading(idx, radians)
+    -- TODO (verify on your Ashita build): the method name might be
+    --   SetLocalHeading or SetHeading depending on SDK version. Both have
+    --   been seen in the wild. If one errors, swap to the other.
+    local ok, err = pcall(function()
+        entity():SetLocalHeading(idx, radians);
+    end);
+    if (not ok) then
+        -- Fallback attempt
+        pcall(function() entity():SetHeading(idx, radians); end);
+    end
+end
+
+local function faceAway(mobIdx)
+    local si = selfIndex();
+    local h  = computeHeading(mobIdx, si, true);
+    if (not h) then return; end
+    -- Save the heading we were at so we can restore
+    M.savedHeading = entity():GetLocalHeading(si);
+    M.savedTarget  = mobIdx;
+    setHeading(si, h);
+    if (M.debug) then echo('faceAway -> rad '..string.format('%.3f', h)); end
+end
+
+local function faceBack()
+    if (M.savedHeading == nil) then return; end
+    setHeading(selfIndex(), M.savedHeading);
+    if (M.debug) then echo('faceBack -> rad '..string.format('%.3f', M.savedHeading)); end
+    M.savedHeading = nil;
+    M.savedTarget  = nil;
+end
+
+-- ---------------------------------------------------------------------------
+-- Action-packet handler  (0x028 = incoming action, equivalent to Windower's
+-- 'action' event). We parse enough to know: who's acting, what ability,
+-- what category, and who the primary target is.
+-- ---------------------------------------------------------------------------
+--
+-- Packet 0x028 layout (reference: Project Topaz / Ashita docs):
+--   offset  size   field
+--   0x05    4      actor_id (server id of the mob/player casting)
+--   0x09    4b/4b  target_count (low nibble) / unused
+--   0x0A    4b/6b  category (low 4 bits) / param_hi (upper 6 bits)
+--   0x0B    1b/16b reserved / param (spell/ability id)
+--     ^ category 4 = finished spell, 7 = begin ability, 8 = begin spell,
+--       11 = finished ability
+--   0x19    4      first target server id
+--
+-- We only care about: is actor an NPC, is first target me, what's the ability
+-- id, and what's the category.
+local function parseAction028(data)
+    -- Pull values via string.byte with masking
+    local b = function(off) return struct.unpack('B', data, 1 + off); end
+    local w = function(off) return struct.unpack('I4', data, 1 + off); end
+
+    local actor_id      = w(0x05);
+    local category_byte = b(0x0A);
+    local category      = category_byte % 16;
+    local param         = struct.unpack('I2', data, 1 + 0x0B);
+    local first_target  = w(0x19);
+    return actor_id, category, param, first_target;
+end
+
+ashita.events.register('packet_in', 'rechhar_028', function(e)
+    if (not M.enabled) then return; end
+    if (e.id ~= 0x028) then return; end
+
+    local ok, actorId, category, param, firstTargetId = pcall(parseAction028, e.data);
+    if (not ok) then return; end
+
+    -- We only react when the action's primary target is US
+    if (firstTargetId ~= selfServerId()) then return; end
+    -- And we only react to NPC actors (not players)
+    local actorIdx = indexFromServerId(actorId);
+    if (not actorIdx) then return; end
+    local isNpc = (entity():GetSpawnFlags(actorIdx) ~= 0);  -- non-zero = non-player
+    if (not isNpc) then return; end
+
+    -- Resolve ability name from category + param
+    local abilityName = nil;
+    local rm = AshitaCore:GetResourceManager();
+    if (category == 7 or category == 11) then
+        -- Monster ability (ready move)
+        local ab = rm:GetAbilityById(param + 0x200);  -- monster abilities offset
+        if (ab) then abilityName = ab.Name[1]; end
+    elseif (category == 8 or category == 4) then
+        -- Spell
+        local sp = rm:GetSpellById(param);
+        if (sp) then abilityName = sp.Name[1]; end
+    else
+        return;  -- categories we don't care about
+    end
+    if (not abilityName) then return; end
+
+    local gaze = gazes.lookup(abilityName, M.era);
+    if (not gaze) then
+        if (M.debug) then echo('(not a tracked gaze) '..abilityName); end
+        return;
+    end
+
+    if (M.debug) then
+        echo(('%s uses %s (cat %d) -> %s')
+             :format('mob', abilityName, category, gaze.type));
+    end
+
+    -- Category 7 or 8 = beginning the action  (face away)
+    -- Category 4 or 11 = finished the action  (face back)
+    if (category == 7 or category == 8) then
+        faceAway(actorIdx);
+        echo(('turning away from %s'):format(abilityName));
+    elseif (category == 4 or category == 11) then
+        faceBack();
+    end
+end);
+
+-- ---------------------------------------------------------------------------
+-- Commands
 -- ---------------------------------------------------------------------------
 ashita.events.register('command', 'rechhar_command', function(e)
     local args = e.command:args();
@@ -61,102 +235,46 @@ ashita.events.register('command', 'rechhar_command', function(e)
     local val = (args[3] or ''):lower();
 
     if (cmd == 'on') then
-        M.enabled = true;
-        print('[reChhar] ENABLED');
-
+        M.enabled = true;  cfg.enabled = true;  settings.save(cfg);
+        echo('ENABLED');
     elseif (cmd == 'off') then
-        M.enabled = false;
-        print('[reChhar] DISABLED');
-
+        M.enabled = false; cfg.enabled = false; settings.save(cfg);
+        echo('DISABLED');
     elseif (cmd == 'era') then
-        if (val == 'toau' or val == 'wotg' or val == 'retail') then
-            M.era = val;
-            print(('[reChhar] Era set to %s (%d gaze abilities loaded)')
-                  :format(val, gazes.countFor(val)));
+        if (val == 'toau' or val == 'wotg' or val == 'retail' or val == 'base') then
+            M.era = val; cfg.era = val; settings.save(cfg);
+            echo(('era = %s (%d gazes tracked)'):format(val, gazes.countFor(val)));
         else
-            print(('[reChhar] Current era: %s. Options: toau, wotg, retail'):format(M.era));
+            echo(('era = %s. options: base, toau, wotg, retail'):format(M.era));
         end
-
     elseif (cmd == 'list') then
-        print(('[reChhar] Era: %s'):format(M.era));
+        echo(('tracked gazes for era "%s":'):format(M.era));
         for name, info in pairs(gazes.listFor(M.era)) do
-            print(('  - %-25s  (%s, telegraph %.1fs)'):format(name, info.type, info.delay));
+            print(('  %-25s  %-7s  (%s)'):format(name, info.type, info.effect or '-'));
         end
-
-    elseif (cmd == 'add') then
-        local name = args[3] and e.command:match('/rechhar add%s+"?(.-)"?%s*$') or nil;
-        if (name) then
-            M.config.customGazes = M.config.customGazes or {};
-            table.insert(M.config.customGazes, name);
-            settings.save(M.config);
-            print(('[reChhar] Added "%s" to custom gaze list'):format(name));
-        end
-
-    elseif (cmd == 'remove') then
-        local name = args[3] and e.command:match('/rechhar remove%s+"?(.-)"?%s*$') or nil;
-        if (name and M.config.customGazes) then
-            for i, v in ipairs(M.config.customGazes) do
-                if (v == name) then
-                    table.remove(M.config.customGazes, i);
-                    settings.save(M.config);
-                    print(('[reChhar] Removed "%s" from custom gaze list'):format(name));
-                    return;
-                end
-            end
-        end
-
     elseif (cmd == 'debug') then
-        print(('[reChhar DEBUG] enabled=%s  era=%s  active=%d  saved heading=%s')
-              :format(tostring(M.enabled), M.era, #M.activeGazes,
-                      tostring(M.savedHeading)));
-
+        M.debug = not M.debug;
+        echo('debug = '..tostring(M.debug));
+    elseif (cmd == 'test') then
+        -- Test the heading math on your current target
+        local p = AshitaCore:GetMemoryManager():GetPlayer();
+        local t = AshitaCore:GetMemoryManager():GetTarget();
+        local tidx = t:GetTargetIndex(0);
+        if (tidx and tidx ~= 0) then
+            echo('testing faceAway on current target...');
+            faceAway(tidx);
+            ashita.timer.once(3.0, function() faceBack(); echo('faced back'); end);
+        else
+            echo('no target to test on');
+        end
     else
-        print('[reChhar] Commands:');
+        echo('commands:');
         print('  /rechhar on | off');
-        print('  /rechhar era <toau|wotg|retail>');
-        print('  /rechhar list');
-        print('  /rechhar add "Ability Name"');
-        print('  /rechhar remove "Ability Name"');
-        print('  /rechhar debug');
+        print('  /rechhar era <base|toau|wotg|retail>');
+        print('  /rechhar list     -- show tracked gazes');
+        print('  /rechhar test     -- try face-away on current target');
+        print('  /rechhar debug    -- toggle verbose logging');
     end
 end);
 
--- ---------------------------------------------------------------------------
--- Incoming-action hook  (0x028 packet - the mob started a move)
--- ---------------------------------------------------------------------------
--- TODO: parse packet 0x028, identify category 11 (ability) or 4 (spell),
---       look up action ID in gazes database, if matched then schedule
---       face-away at telegraph delay, and face-back after resolution.
-ashita.events.register('packet_in', 'rechhar_packet_in', function(e)
-    if (not M.enabled) then return; end
-    if (e.id ~= 0x028) then return; end
-
-    -- Placeholder: real parsing goes here once we study the React source.
-    -- Pseudocode:
-    --   local actor_id, target_id, category, action_id = parse028(e.data);
-    --   if (target_id == my_server_id) then
-    --       local gaze = gazes.lookupById(action_id, M.era);
-    --       if (gaze) then handleIncomingGaze(actor_id, gaze); end
-    --   end
-end);
-
--- ---------------------------------------------------------------------------
--- Facing control (TODO: real implementation)
--- ---------------------------------------------------------------------------
-local function faceAway(from_entity_id)
-    -- TODO: write to 0x05B keyboard/mouse facing packet, OR directly set
-    -- the player's heading in memory. React does this via a specific client
-    -- packet; need to look at the source for the exact bytes.
-    print(('[reChhar] (stub) would face away from entity %d'):format(from_entity_id));
-end
-
-local function faceBack()
-    if (M.savedHeading) then
-        -- TODO: restore heading
-        print('[reChhar] (stub) would face back to saved heading');
-        M.savedHeading = nil;
-    end
-end
-
--- Expose for other scripts (and testing)
 return M;
