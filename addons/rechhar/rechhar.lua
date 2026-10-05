@@ -105,20 +105,15 @@ local function computeHeading(mobIdx, selfIdx, facingAway)
     return degrees * math.pi / 180;
 end
 
--- Apply a heading. Ashita's Entity interface exposes GetLocalHeading(idx) for
--- reads; writes go through the same object's SetLocalHeading(idx, radians).
--- If your Ashita build names this differently, change ONLY this function.
+-- Ashita v4 exposes GetHeading / SetHeading (no "Local" prefix) on the
+-- entity table. Positions ARE prefixed (GetLocalPositionX etc.) but heading
+-- is not. Confirmed on Phoenix build 2026-10-04.
 local function setHeading(idx, radians)
-    -- TODO (verify on your Ashita build): the method name might be
-    --   SetLocalHeading or SetHeading depending on SDK version. Both have
-    --   been seen in the wild. If one errors, swap to the other.
-    local ok, err = pcall(function()
-        entity():SetLocalHeading(idx, radians);
-    end);
-    if (not ok) then
-        -- Fallback attempt
-        pcall(function() entity():SetHeading(idx, radians); end);
-    end
+    entity():SetHeading(idx, radians);
+end
+
+local function getHeading(idx)
+    return entity():GetHeading(idx);
 end
 
 local function faceAway(mobIdx)
@@ -126,7 +121,7 @@ local function faceAway(mobIdx)
     local h  = computeHeading(mobIdx, si, true);
     if (not h) then return; end
     -- Save the heading we were at so we can restore
-    M.savedHeading = entity():GetLocalHeading(si);
+    M.savedHeading = getHeading(si);
     M.savedTarget  = mobIdx;
     setHeading(si, h);
     if (M.debug) then echo('faceAway -> rad '..string.format('%.3f', h)); end

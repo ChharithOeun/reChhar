@@ -1,0 +1,23 @@
+# OS / editor cruft
+.DS_Store
+Thumbs.db
+desktop.ini
+*.swp
+*~
+.vscode/
+.idea/
+
+# Secrets
+*.pat
+*.token
+.env
+secrets.json
+
+# Local build / tool artifacts
+tools/wget.exe
+tools/wget.zip
+*.log
+*.tmp
+
+# Windows task scheduler residue (local only)
+tasks/*.xml.local
