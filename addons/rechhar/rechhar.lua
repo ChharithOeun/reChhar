@@ -23,7 +23,7 @@
 
 addon.name    = 'reChhar';
 addon.author  = 'ChharithOeun (port) / Sammeh (original React)';
-addon.version = '0.2.2';
+addon.version = '0.2.3';
 addon.desc    = 'Universal auto-face-away during gaze attacks (Ashita port of React)';
 
 require('common');
@@ -105,9 +105,12 @@ local function computeHeading(mobIdx, selfIdx, facingAway)
     return degrees * math.pi / 180;
 end
 
--- Ashita v4 exposes GetHeading / SetHeading (no "Local" prefix) on the
--- entity table. Positions ARE prefixed (GetLocalPositionX etc.) but heading
--- is not. Confirmed on Phoenix build 2026-10-04.
+-- Ashita v4 exposes GetHeading / SetHeading on the entity table. HOWEVER
+-- writing the player's heading via entity memory often doesn't visibly
+-- rotate the character -- the engine controls player facing via a separate
+-- target-heading field and server-side position syncing. We may need a
+-- packet or raw-address approach next. For now, v0.2.3 just adds diagnostic
+-- output so we can see what's actually happening in memory.
 local function setHeading(idx, radians)
     entity():SetHeading(idx, radians);
 end
@@ -120,11 +123,14 @@ local function faceAway(mobIdx)
     local si = selfIndex();
     local h  = computeHeading(mobIdx, si, true);
     if (not h) then return; end
-    -- Save the heading we were at so we can restore
     M.savedHeading = getHeading(si);
     M.savedTarget  = mobIdx;
+    local before = getHeading(si);
     setHeading(si, h);
-    if (M.debug) then echo('faceAway -> rad '..string.format('%.3f', h)); end
+    local after = getHeading(si);
+    -- Always echo during test so we can see whether memory actually sticks
+    echo(('faceAway: self_idx=%d  computed=%.3f  before=%.3f  after=%.3f  delta=%.3f')
+         :format(si, h, before or 0, after or 0, (after or 0) - (before or 0)));
 end
 
 local function faceBack()
