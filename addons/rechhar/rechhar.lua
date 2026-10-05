@@ -23,7 +23,7 @@
 
 addon.name    = 'reChhar';
 addon.author  = 'ChharithOeun (port) / Sammeh (original React)';
-addon.version = '0.3.1';
+addon.version = '0.3.2';
 addon.desc    = 'Universal auto-face-away during gaze attacks (Ashita port of React)';
 
 require('common');
@@ -153,11 +153,11 @@ local function sendTurnPacket(radians)
     local z = ent:GetLocalPositionZ(si) or 0;
     local h = radiansToHeadingByte(radians);
 
-    -- Build the packet body. Ashita's AddOutgoingPacket signature may differ
-    -- across builds -- we try the two most common forms.
-    local payload;
+    -- Pack to binary string, then convert to table-of-bytes which is what
+    -- Ashita v4's AddOutgoingPacket actually wants.
+    local payload_str;
     local pack_ok, pack_err = pcall(function()
-        payload = struct.pack('< I4 f f f H H B B H',
+        payload_str = struct.pack('< I4 f f f H H B B H',
             0,           -- sequence
             x, z, y,     -- position (hold current)
             0,           -- run count
@@ -168,17 +168,17 @@ local function sendTurnPacket(radians)
         );
     end);
     if (not pack_ok) then return false, 'struct.pack failed: '..tostring(pack_err); end
-    if (not payload) then return false, 'payload nil after pack'; end
+    if (not payload_str) then return false, 'payload nil after pack'; end
 
-    -- Try two-arg form first: AddOutgoingPacket(id, data)
-    local ok1, err1 = pcall(function() pm:AddOutgoingPacket(0x15, payload); end);
-    if (ok1) then return true, '2-arg ok'; end
+    -- Convert string to table of byte values
+    local payload = {};
+    for i = 1, #payload_str do
+        payload[i] = string.byte(payload_str, i);
+    end
 
-    -- Try three-arg form: AddOutgoingPacket(id, size, data)
-    local ok2, err2 = pcall(function() pm:AddOutgoingPacket(0x15, 0x18, payload); end);
-    if (ok2) then return true, '3-arg ok'; end
-
-    return false, ('both forms failed: 2arg=%s  3arg=%s'):format(tostring(err1), tostring(err2));
+    local ok, err = pcall(function() pm:AddOutgoingPacket(0x15, payload); end);
+    if (ok) then return true, 'sent'; end
+    return false, tostring(err);
 end
 
 -- Chat alert: big obvious warning so you can turn manually.
