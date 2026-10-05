@@ -23,7 +23,7 @@
 
 addon.name    = 'reChhar';
 addon.author  = 'ChharithOeun (port) / Sammeh (original React)';
-addon.version = '0.3.0';
+addon.version = '0.3.1';
 addon.desc    = 'Universal auto-face-away during gaze attacks (Ashita port of React)';
 
 require('common');
@@ -142,10 +142,10 @@ end
 
 -- Build and send an outgoing 0x015 standard-position packet with the chosen
 -- heading. This is how Byrth's React rotates the character on Windower --
--- same idea, Ashita API. Returns true on apparent success.
+-- same idea, Ashita API. Returns ok, err_message.
 local function sendTurnPacket(radians)
     local pm = AshitaCore:GetPacketManager();
-    if (not pm) then return false; end
+    if (not pm) then return false, 'no packet manager'; end
     local si = selfIndex();
     local ent = entity();
     local x = ent:GetLocalPositionX(si) or 0;
@@ -153,31 +153,32 @@ local function sendTurnPacket(radians)
     local z = ent:GetLocalPositionZ(si) or 0;
     local h = radiansToHeadingByte(radians);
 
-    -- Build a 0x18-byte 0x015 packet. Format (based on Topaz source):
-    --   0x00: id (2 bytes)   -- Ashita adds this
-    --   0x02: size (2 bytes) -- Ashita adds this
-    --   0x04: sequence (4)   -- 0
-    --   0x08: x (float)
-    --   0x0C: z (float)   -- FFXI Y-up: Z is horizontal
-    --   0x10: y (float)   -- Y is vertical
-    --   0x14: run_count (ushort)
-    --   0x16: head_pos (ushort)
-    --   0x18: heading byte
-    --   0x19: move_count (byte)
-    --   0x1A: target_index (ushort)
-    local ok = pcall(function()
-        local data = struct.pack('< I4 f f f H H B B H',
+    -- Build the packet body. Ashita's AddOutgoingPacket signature may differ
+    -- across builds -- we try the two most common forms.
+    local payload;
+    local pack_ok, pack_err = pcall(function()
+        payload = struct.pack('< I4 f f f H H B B H',
             0,           -- sequence
-            x, z, y,     -- position (don't change -- hold current)
+            x, z, y,     -- position (hold current)
             0,           -- run count
-            0,           -- head position (same as heading)
+            0,           -- head position
             h,           -- heading byte
             0,           -- move count
             0            -- target index
         );
-        pm:AddOutgoingPacket(0x15, data);
     end);
-    return ok;
+    if (not pack_ok) then return false, 'struct.pack failed: '..tostring(pack_err); end
+    if (not payload) then return false, 'payload nil after pack'; end
+
+    -- Try two-arg form first: AddOutgoingPacket(id, data)
+    local ok1, err1 = pcall(function() pm:AddOutgoingPacket(0x15, payload); end);
+    if (ok1) then return true, '2-arg ok'; end
+
+    -- Try three-arg form: AddOutgoingPacket(id, size, data)
+    local ok2, err2 = pcall(function() pm:AddOutgoingPacket(0x15, 0x18, payload); end);
+    if (ok2) then return true, '3-arg ok'; end
+
+    return false, ('both forms failed: 2arg=%s  3arg=%s'):format(tostring(err1), tostring(err2));
 end
 
 -- Chat alert: big obvious warning so you can turn manually.
@@ -204,10 +205,10 @@ local function faceAway(mobIdx, abilityName, mobName, gazeType)
 
     -- Feature 2: packet-based auto-turn (opt-in)
     if (M.autoturn) then
-        local sent = sendTurnPacket(h);
+        local sent, info = sendTurnPacket(h);
         if (M.debug) then
-            echo(('autoturn: sent=%s  computed_rad=%.3f  heading_byte=%d')
-                 :format(tostring(sent), h, radiansToHeadingByte(h)));
+            echo(('autoturn: sent=%s  info=%s  rad=%.3f  byte=%d')
+                 :format(tostring(sent), tostring(info), h, radiansToHeadingByte(h)));
         end
     end
 end
