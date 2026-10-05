@@ -14,10 +14,16 @@
 
 addon.name    = 'reChhar';
 addon.author  = 'Chharizard';
-addon.version = '0.4.0';
+addon.version = '0.4.1';
 addon.desc    = 'Gaze detection and reaction (alert + optional auto-turn)';
 
 require('common');
+-- imgui is required for the HUD. In Ashita v4 it's a module, not a global,
+-- so we have to pull it in explicitly. If this fails we fall back gracefully
+-- and the HUD just won't render (alerts/autoturn still work).
+local imgui_ok, imgui_mod = pcall(require, 'imgui');
+if (imgui_ok) then imgui = imgui_mod; end
+
 local gazes    = require('data.gazes');
 local settings = require('data.settings');
 
@@ -321,9 +327,11 @@ end);
 -- ---------------------------------------------------------------------------
 -- HUD: floating-card telegraph display  (imgui, drawn on d3d_present)
 -- ---------------------------------------------------------------------------
-ashita.events.register('d3d_present', 'rechhar_hud', function()
+-- Wrap render in pcall so a bad imgui call never unloads the addon.
+local function renderHud()
     if (not M.hud) then return; end
     if (not M.enabled) then return; end
+    if (not imgui) then return; end
 
     -- Garbage-collect stale cards first
     local now = os.clock();
@@ -338,30 +346,32 @@ ashita.events.register('d3d_present', 'rechhar_hud', function()
     for _ in pairs(M.hudCards) do count = count + 1; end
     if (count == 0) then return; end
 
-    imgui.SetNextWindowPos({ M.hudPosX, M.hudPosY }, ImGuiCond_Always);
-    imgui.SetNextWindowSize({ 320, 32 * count + 16 }, ImGuiCond_Always);
+    -- Pull constants off the imgui module (not globals in Ashita v4)
+    local Cond_Always = imgui.ImGuiCond_Always or 1;
+    local Flags = 0;
+    for _, name in ipairs({'ImGuiWindowFlags_NoTitleBar','ImGuiWindowFlags_NoResize',
+                           'ImGuiWindowFlags_NoMove','ImGuiWindowFlags_NoScrollbar',
+                           'ImGuiWindowFlags_NoCollapse','ImGuiWindowFlags_NoNav',
+                           'ImGuiWindowFlags_NoFocusOnAppearing'}) do
+        if (imgui[name]) then Flags = bit.bor(Flags, imgui[name]); end
+    end
+    local Col_Text          = imgui.ImGuiCol_Text          or 0;
+    local Col_PlotHistogram = imgui.ImGuiCol_PlotHistogram or 40;
+
+    imgui.SetNextWindowPos({ M.hudPosX, M.hudPosY }, Cond_Always);
+    imgui.SetNextWindowSize({ 320, 32 * count + 16 }, Cond_Always);
     imgui.SetNextWindowBgAlpha(0.65);
-    local flags = bit.bor(
-        ImGuiWindowFlags_NoTitleBar,
-        ImGuiWindowFlags_NoResize,
-        ImGuiWindowFlags_NoMove,
-        ImGuiWindowFlags_NoScrollbar,
-        ImGuiWindowFlags_NoCollapse,
-        ImGuiWindowFlags_NoNav,
-        ImGuiWindowFlags_NoFocusOnAppearing
-    );
-    if (imgui.Begin('reChhar HUD', nil, flags)) then
+    if (imgui.Begin('reChhar HUD', nil, Flags)) then
         for id, c in pairs(M.hudCards) do
             local elapsed = now - c.startedAt;
             local progress = math.max(0, math.min(1, 1 - (elapsed / c.duration)));
             local label = string.format('%s: %s  (%.1fs)', c.mob, c.ability, c.duration - elapsed);
-            -- Color: red for known gazes, yellow/white for other abilities
             if (c.isGaze) then
-                imgui.PushStyleColor(ImGuiCol_Text, { 1.0, 0.3, 0.3, 1.0 });
-                imgui.PushStyleColor(ImGuiCol_PlotHistogram, { 1.0, 0.2, 0.2, 1.0 });
+                imgui.PushStyleColor(Col_Text, { 1.0, 0.3, 0.3, 1.0 });
+                imgui.PushStyleColor(Col_PlotHistogram, { 1.0, 0.2, 0.2, 1.0 });
             else
-                imgui.PushStyleColor(ImGuiCol_Text, { 1.0, 1.0, 0.6, 1.0 });
-                imgui.PushStyleColor(ImGuiCol_PlotHistogram, { 1.0, 0.9, 0.3, 1.0 });
+                imgui.PushStyleColor(Col_Text, { 1.0, 1.0, 0.6, 1.0 });
+                imgui.PushStyleColor(Col_PlotHistogram, { 1.0, 0.9, 0.3, 1.0 });
             end
             imgui.Text(label);
             imgui.ProgressBar(progress, { 300, 6 }, '');
@@ -369,6 +379,14 @@ ashita.events.register('d3d_present', 'rechhar_hud', function()
         end
     end
     imgui.End();
+end
+
+ashita.events.register('d3d_present', 'rechhar_hud', function()
+    local ok, err = pcall(renderHud);
+    if (not ok and M.debug) then
+        print('[reChhar HUD] render error (disabling HUD): '..tostring(err));
+        M.hud = false;
+    end
 end);
 
 -- ---------------------------------------------------------------------------
@@ -403,7 +421,8 @@ ashita.events.register('command', 'rechhar_command', function(e)
         if (val == 'on' or val == 'off') then
             M.hud = (val == 'on'); cfg.hud = M.hud; settings.save(cfg);
         end
-        echo('hud = '..(M.hud and 'ON' or 'OFF'));
+        local imgui_status = imgui and '' or '  WARNING: imgui not loaded, HUD will be silent';
+        echo('hud = '..(M.hud and 'ON' or 'OFF')..imgui_status);
     elseif (cmd == 'hudpos') then
         -- /rechhar hudpos <x> <y>
         local x = tonumber(args[3]);
