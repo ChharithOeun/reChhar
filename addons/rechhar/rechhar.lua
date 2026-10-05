@@ -23,7 +23,7 @@
 
 addon.name    = 'reChhar';
 addon.author  = 'ChharithOeun (port) / Sammeh (original React)';
-addon.version = '0.2.6';
+addon.version = '0.3.0';
 addon.desc    = 'Universal auto-face-away during gaze attacks (Ashita port of React)';
 
 require('common');
@@ -36,15 +36,18 @@ local settings = require('data.settings');
 local M = {
     enabled      = false,
     era          = 'toau',
-    savedHeading = nil,       -- restore to this after action resolves
-    savedTarget  = nil,       -- the mob whose gaze we're reacting to
+    alert        = true,       -- chat warning on gaze detect (safe, default ON)
+    autoturn     = false,      -- packet-based auto-rotate (opt-in, less proven)
+    savedHeading = nil,
+    savedTarget  = nil,
     debug        = false,
 };
 
--- Hydrate from saved settings
 local cfg = settings.load();
-M.enabled = cfg.enabled or false;
-M.era     = cfg.era     or 'toau';
+M.enabled  = cfg.enabled  == true;
+M.era      = cfg.era      or 'toau';
+M.alert    = (cfg.alert    ~= false);   -- default true unless explicitly disabled
+M.autoturn = cfg.autoturn == true;      -- default false unless explicitly enabled
 
 -- ---------------------------------------------------------------------------
 -- Load / Unload
@@ -130,18 +133,83 @@ local function getHeading(idx)
     return entity():GetHeading(idx);
 end
 
-local function faceAway(mobIdx)
+-- Convert radians (-π to π) to the single-byte heading format FFXI uses
+-- in packet 0x015. 0 = east, 64 = north, 128 = west, 192 = south.
+local function radiansToHeadingByte(radians)
+    local b = math.floor(((radians + math.pi) / (2 * math.pi)) * 256) % 256;
+    return b;
+end
+
+-- Build and send an outgoing 0x015 standard-position packet with the chosen
+-- heading. This is how Byrth's React rotates the character on Windower --
+-- same idea, Ashita API. Returns true on apparent success.
+local function sendTurnPacket(radians)
+    local pm = AshitaCore:GetPacketManager();
+    if (not pm) then return false; end
+    local si = selfIndex();
+    local ent = entity();
+    local x = ent:GetLocalPositionX(si) or 0;
+    local y = ent:GetLocalPositionY(si) or 0;
+    local z = ent:GetLocalPositionZ(si) or 0;
+    local h = radiansToHeadingByte(radians);
+
+    -- Build a 0x18-byte 0x015 packet. Format (based on Topaz source):
+    --   0x00: id (2 bytes)   -- Ashita adds this
+    --   0x02: size (2 bytes) -- Ashita adds this
+    --   0x04: sequence (4)   -- 0
+    --   0x08: x (float)
+    --   0x0C: z (float)   -- FFXI Y-up: Z is horizontal
+    --   0x10: y (float)   -- Y is vertical
+    --   0x14: run_count (ushort)
+    --   0x16: head_pos (ushort)
+    --   0x18: heading byte
+    --   0x19: move_count (byte)
+    --   0x1A: target_index (ushort)
+    local ok = pcall(function()
+        local data = struct.pack('< I4 f f f H H B B H',
+            0,           -- sequence
+            x, z, y,     -- position (don't change -- hold current)
+            0,           -- run count
+            0,           -- head position (same as heading)
+            h,           -- heading byte
+            0,           -- move count
+            0            -- target index
+        );
+        pm:AddOutgoingPacket(0x15, data);
+    end);
+    return ok;
+end
+
+-- Chat alert: big obvious warning so you can turn manually.
+-- Uses in-game echo (/echo) via chat manager so it shows in chat line.
+local function doAlert(abilityName, mobName, gazeType)
+    local msg = string.format('*** %s INCOMING: %s%s - TURN AWAY ***',
+        gazeType:upper(),
+        abilityName,
+        mobName and (' from ' .. mobName) or '');
+    AshitaCore:GetChatManager():QueueCommand(1, '/echo ' .. msg);
+end
+
+local function faceAway(mobIdx, abilityName, mobName, gazeType)
     local si = selfIndex();
     local h  = computeHeading(mobIdx, si, true);
     if (not h) then return; end
     M.savedHeading = getHeading(si);
     M.savedTarget  = mobIdx;
-    local before = getHeading(si);
-    setHeading(si, h);
-    local after = getHeading(si);
-    -- Always echo during test so we can see whether memory actually sticks
-    echo(('faceAway: self_idx=%d  computed=%.3f  before=%.3f  after=%.3f  delta=%.3f')
-         :format(si, h, before or 0, after or 0, (after or 0) - (before or 0)));
+
+    -- Feature 1: chat alert (always safe)
+    if (M.alert and abilityName) then
+        doAlert(abilityName, mobName, gazeType or 'GAZE');
+    end
+
+    -- Feature 2: packet-based auto-turn (opt-in)
+    if (M.autoturn) then
+        local sent = sendTurnPacket(h);
+        if (M.debug) then
+            echo(('autoturn: sent=%s  computed_rad=%.3f  heading_byte=%d')
+                 :format(tostring(sent), h, radiansToHeadingByte(h)));
+        end
+    end
 end
 
 local function faceBack()
@@ -227,11 +295,16 @@ ashita.events.register('packet_in', 'rechhar_028', function(e)
 
     -- Category 7 or 8 = beginning the action  (face away)
     -- Category 4 or 11 = finished the action  (face back)
+    -- Resolve mob name for alert text
+    local ent = entity();
+    local mobName = ent:GetName(actorIdx) or 'mob';
+
     if (category == 7 or category == 8) then
-        faceAway(actorIdx);
-        echo(('turning away from %s'):format(abilityName));
+        faceAway(actorIdx, abilityName, mobName, gaze.type);
+        if (M.debug) then echo(('react begin: %s / %s'):format(mobName, abilityName)); end
     elseif (category == 4 or category == 11) then
         faceBack();
+        if (M.debug) then echo(('react end: %s / %s'):format(mobName, abilityName)); end
     end
 end);
 
@@ -248,10 +321,22 @@ ashita.events.register('command', 'rechhar_command', function(e)
 
     if (cmd == 'on') then
         M.enabled = true;  cfg.enabled = true;  settings.save(cfg);
-        echo('ENABLED');
+        echo(('ENABLED  (alert=%s  autoturn=%s)')
+             :format(M.alert and 'on' or 'off', M.autoturn and 'on' or 'off'));
     elseif (cmd == 'off') then
         M.enabled = false; cfg.enabled = false; settings.save(cfg);
         echo('DISABLED');
+    elseif (cmd == 'alert') then
+        if (val == 'on' or val == 'off') then
+            M.alert = (val == 'on'); cfg.alert = M.alert; settings.save(cfg);
+        end
+        echo('alert = '..(M.alert and 'ON' or 'OFF'));
+    elseif (cmd == 'autoturn') then
+        if (val == 'on' or val == 'off') then
+            M.autoturn = (val == 'on'); cfg.autoturn = M.autoturn; settings.save(cfg);
+        end
+        echo('autoturn = '..(M.autoturn and 'ON' or 'OFF')
+             ..(M.autoturn and '  (uses packet 0x015, test on Horizon first)' or ''));
     elseif (cmd == 'era') then
         if (val == 'toau' or val == 'wotg' or val == 'retail' or val == 'base') then
             M.era = val; cfg.era = val; settings.save(cfg);
@@ -268,19 +353,14 @@ ashita.events.register('command', 'rechhar_command', function(e)
         M.debug = not M.debug;
         echo('debug = '..tostring(M.debug));
     elseif (cmd == 'test') then
-        -- Diagnostic: show three different self-index lookups so we can
-        -- confirm which (if any) is correct.
-        local a = selfIndex();         -- GetParty():GetMemberTargetIndex(0)
-        local c = selfIndexByScan();   -- scan entity table for matching ServerId
-        local sid = selfServerId();
-        echo(('self-index checks:  party=%s  scan=%s  (serverId=%s)')
-             :format(tostring(a), tostring(c), tostring(sid)));
-
+        -- Fires both alert + autoturn (if enabled) as if a gaze happened.
         local t = AshitaCore:GetMemoryManager():GetTarget();
         local tidx = t:GetTargetIndex(0);
         if (tidx and tidx ~= 0) then
-            echo('facing away from current target. /rechhar faceback restores.');
-            faceAway(tidx);
+            local ent = entity();
+            local mobName = ent:GetName(tidx) or 'target';
+            echo('testing react on current target...');
+            faceAway(tidx, 'Test Gaze', mobName, 'gaze');
         else
             echo('no target to test on');
         end
@@ -292,9 +372,10 @@ ashita.events.register('command', 'rechhar_command', function(e)
         print('  /rechhar on | off');
         print('  /rechhar era <base|toau|wotg|retail>');
         print('  /rechhar list     -- show tracked gazes');
-        print('  /rechhar test     -- face away from current target (manual)');
-        print('  /rechhar faceback -- restore heading after test');
-        print('  /rechhar debug    -- toggle verbose logging');
+        print('  /rechhar alert on|off     -- chat warning on gaze detect (safe)');
+        print('  /rechhar autoturn on|off  -- packet 0x015 auto-rotate (opt-in)');
+        print('  /rechhar test             -- fire a mock gaze on current target');
+        print('  /rechhar debug            -- toggle verbose logging');
     end
 end);
 
