@@ -23,7 +23,7 @@
 
 addon.name    = 'reChhar';
 addon.author  = 'ChharithOeun (port) / Sammeh (original React)';
-addon.version = '0.2.3';
+addon.version = '0.2.4';
 addon.desc    = 'Universal auto-face-away during gaze attacks (Ashita port of React)';
 
 require('common');
@@ -69,6 +69,21 @@ end
 
 local function selfServerId()
     return AshitaCore:GetMemoryManager():GetParty():GetMemberServerId(0);
+end
+
+-- Alternative: pull index straight off the player object (not through party)
+local function selfIndexAlt()
+    return AshitaCore:GetMemoryManager():GetPlayer():GetTargetIndex();
+end
+
+-- Alternative: scan entity table for the one whose ServerId == us
+local function selfIndexByScan()
+    local sid = selfServerId();
+    local ent = entity();
+    for i = 0, 0x8FF do
+        if (ent:GetServerId(i) == sid) then return i; end
+    end
+    return nil;
 end
 
 local function entity() return AshitaCore:GetMemoryManager():GetEntity(); end
@@ -257,12 +272,19 @@ ashita.events.register('command', 'rechhar_command', function(e)
         M.debug = not M.debug;
         echo('debug = '..tostring(M.debug));
     elseif (cmd == 'test') then
-        -- Test the heading math on your current target.
-        -- Timer-free: /rechhar test faces you away, /rechhar faceback restores.
+        -- Diagnostic: show three different self-index lookups so we can
+        -- confirm which (if any) is correct.
+        local a = selfIndex();         -- GetParty():GetMemberTargetIndex(0)
+        local b = selfIndexAlt();      -- GetPlayer():GetTargetIndex()
+        local c = selfIndexByScan();   -- scan for matching ServerId
+        local sid = selfServerId();
+        echo(('self-index checks:  party=%s  player=%s  scan=%s  (serverId=%s)')
+             :format(tostring(a), tostring(b), tostring(c), tostring(sid)));
+
         local t = AshitaCore:GetMemoryManager():GetTarget();
         local tidx = t:GetTargetIndex(0);
         if (tidx and tidx ~= 0) then
-            echo('facing away from current target. Run /rechhar faceback to restore.');
+            echo('facing away from current target. /rechhar faceback restores.');
             faceAway(tidx);
         else
             echo('no target to test on');
